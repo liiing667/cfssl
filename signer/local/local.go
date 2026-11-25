@@ -366,6 +366,9 @@ func (s *Signer) Sign(req signer.SignRequest) (cert []byte, err error) {
 	if err != nil {
 		return nil, err
 	}
+	if csrTemplate == nil {
+		return nil, cferr.New(cferr.CSRError, cferr.ParseFailed)
+	}
 
 	// Copy out only the fields from the CSR authorized by policy.
 	safeTemplate := x509.Certificate{}

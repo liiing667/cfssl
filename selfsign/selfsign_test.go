@@ -2,8 +2,8 @@ package selfsign
 
 import (
 	"crypto/x509"
-	"encoding/pem"
 	"encoding/asn1"
+	"encoding/pem"
 	"net"
 	"net/url"
 	"os"
@@ -45,6 +45,45 @@ func TestDefaultSign(t *testing.T) {
 	_, err = Sign(priv, csrBytes, profile)
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestSignRejectsInvalidCSRSignature(t *testing.T) {
+	csrBytes, err := os.ReadFile(csrFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyBytes, err := os.ReadFile(keyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	priv, err := helpers.ParsePrivateKeyPEM(keyBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	block, _ := pem.Decode(csrBytes)
+	if block == nil {
+		t.Fatal("test CSR is not PEM")
+	}
+
+	// The signature is the final element of a CSR, so flipping its last byte
+	// changes only the signature and leaves the signed subject intact.
+	tampered := append([]byte(nil), block.Bytes...)
+	tampered[len(tampered)-1] ^= 0xff
+	badCSR := pem.EncodeToMemory(&pem.Block{Type: block.Type, Bytes: tampered})
+
+	profile := config.DefaultConfig()
+	profile.Expiry = 10 * time.Hour
+
+	if cert, err := Sign(priv, badCSR, profile); err == nil {
+		t.Fatalf("Sign() issued a %d-byte certificate for an unverified CSR", len(cert))
+	}
+
+	// The valid control must keep working.
+	if _, err := Sign(priv, csrBytes, profile); err != nil {
+		t.Fatalf("Sign(valid CSR) error = %v", err)
 	}
 }
 
@@ -105,7 +144,7 @@ func TestSANs(t *testing.T) {
 
 }
 
-func TestExtensions(t *testing.T){
+func TestExtensions(t *testing.T) {
 	csrBytes, err := os.ReadFile(extCsrFile)
 	if err != nil {
 		t.Fatal(err)
@@ -135,17 +174,17 @@ func TestExtensions(t *testing.T){
 
 	// Testing for 1.3.6.1.4.1.311.84.1.1=ASN1:UTF8String:example1
 	extFound := false
-	sampleCustomOid := asn1.ObjectIdentifier{1,3,6,1,4,1,311,84,1,1}
+	sampleCustomOid := asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 311, 84, 1, 1}
 	sampleValue := "example1"
 
 	for _, e := range cert.Extensions {
-		if(e.Id.Equal(sampleCustomOid) ){
+		if e.Id.Equal(sampleCustomOid) {
 			var extValue string
 			_, err = asn1.Unmarshal(e.Value, &extValue)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if(extValue == sampleValue){
+			if extValue == sampleValue {
 				extFound = true
 			}
 		}

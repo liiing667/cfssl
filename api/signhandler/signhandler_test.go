@@ -3,6 +3,7 @@ package signhandler
 import (
 	"bytes"
 	"encoding/json"
+	"encoding/pem"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -37,6 +38,68 @@ var validLocalConfigLongerExpiry = `
 }`
 
 var dbAccessor certdb.Accessor
+
+func TestSignRejectsMalformedCSRWithoutPanic(t *testing.T) {
+	conf, err := config.LoadConfig([]byte(validLocalConfigLongerExpiry))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := local.NewSignerFromFile(testCaFile, testCaKeyFile, conf.Signing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := NewHandlerFromSigner(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	validCSR, err := os.ReadFile(testCSRFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	block, _ := pem.Decode(validCSR)
+	if block == nil {
+		t.Fatal("test CSR is not PEM")
+	}
+	tampered := append([]byte(nil), block.Bytes...)
+	tampered[len(tampered)-1] ^= 0xff
+	badSignature := pem.EncodeToMemory(&pem.Block{Type: block.Type, Bytes: tampered})
+
+	tests := []struct {
+		name   string
+		csr    []byte
+		wantOK bool
+	}{
+		{"not PEM", []byte("not even pem"), false},
+		{"empty PEM block", pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST"}), false},
+		{"invalid signature", badSignature, false},
+		{"valid control", validCSR, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body, err := json.Marshal(map[string]string{"certificate_request": string(tt.csr)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
+			rec := httptest.NewRecorder()
+
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						t.Fatalf("sign handler panicked: %v", r)
+					}
+				}()
+				handler.ServeHTTP(rec, req)
+			}()
+
+			if gotOK := rec.Code == http.StatusOK; gotOK != tt.wantOK {
+				t.Fatalf("status = %d, body = %s, want success = %t", rec.Code, rec.Body.String(), tt.wantOK)
+			}
+		})
+	}
+}
 
 func TestSignerDBPersistence(t *testing.T) {
 	conf, err := config.LoadConfig([]byte(validLocalConfigLongerExpiry))

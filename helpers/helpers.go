@@ -514,11 +514,18 @@ func ParseCSR(in []byte) (csr *x509.CertificateRequest, rest []byte, err error) 
 
 // ParseCSRPEM parses a PEM-encoded certificate signing request.
 // It does not check the signature. This is useful for dumping data from a CSR
-// locally.
+// locally; callers that make a trust decision must verify the signature, for
+// example with csr.CheckSignature or helpers.ParseCSR.
 func ParseCSRPEM(csrPEM []byte) (*x509.CertificateRequest, error) {
-	block, _ := pem.Decode([]byte(csrPEM))
-	if block == nil {
+	if len(csrPEM) == 0 {
 		return nil, cferr.New(cferr.CSRError, cferr.DecodeFailed)
+	}
+	block, _ := pem.Decode([]byte(csrPEM))
+	if block == nil || len(block.Bytes) == 0 {
+		return nil, cferr.New(cferr.CSRError, cferr.DecodeFailed)
+	}
+	if block.Type != "NEW CERTIFICATE REQUEST" && block.Type != "CERTIFICATE REQUEST" {
+		return nil, cferr.Wrap(cferr.CSRError, cferr.BadRequest, errors.New("not a csr"))
 	}
 	csrObject, err := x509.ParseCertificateRequest(block.Bytes)
 
@@ -529,9 +536,8 @@ func ParseCSRPEM(csrPEM []byte) (*x509.CertificateRequest, error) {
 	return csrObject, nil
 }
 
-// ParseCSRDER parses a PEM-encoded certificate signing request.
-// It does not check the signature. This is useful for dumping data from a CSR
-// locally.
+// ParseCSRDER parses a DER-encoded certificate signing request and verifies
+// its signature.
 func ParseCSRDER(csrDER []byte) (*x509.CertificateRequest, error) {
 	csrObject, err := x509.ParseCertificateRequest(csrDER)
 	if err != nil {

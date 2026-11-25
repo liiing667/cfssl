@@ -2046,3 +2046,31 @@ func newMLDSA65CASigner(t *testing.T) *Signer {
 	}
 	return s
 }
+
+func TestSignRejectsInvalidCSRSignature(t *testing.T) {
+	s := newTestSigner(t)
+
+	csrPEM, err := os.ReadFile(testCSR)
+	if err != nil {
+		t.Fatal(err)
+	}
+	block, _ := pem.Decode(csrPEM)
+	if block == nil {
+		t.Fatal("test CSR is not PEM")
+	}
+
+	// The signature is the final element of a CSR, so flipping its last byte
+	// leaves the signed subject and key intact while invalidating the signature.
+	tampered := append([]byte(nil), block.Bytes...)
+	tampered[len(tampered)-1] ^= 0xff
+	badCSR := pem.EncodeToMemory(&pem.Block{Type: block.Type, Bytes: tampered})
+
+	if cert, err := s.Sign(signer.SignRequest{Request: string(badCSR)}); err == nil {
+		t.Fatalf("Sign() issued a %d-byte certificate for an unverified CSR", len(cert))
+	}
+
+	// The valid control must keep working.
+	if _, err := s.Sign(signer.SignRequest{Request: string(csrPEM)}); err != nil {
+		t.Fatalf("Sign(valid CSR) error = %v", err)
+	}
+}

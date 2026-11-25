@@ -519,6 +519,44 @@ func TestParseCSRPEMMore(t *testing.T) {
 	}
 }
 
+func TestParseCSRPEMRejectsMalformedInput(t *testing.T) {
+	validCSR, err := os.ReadFile(testCSRPEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name string
+		in   []byte
+	}{
+		{"nil input", nil},
+		{"empty input", []byte{}},
+		{"not PEM", []byte("not even pem")},
+		{"empty PEM block", pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST"})},
+		{"certificate PEM block", pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: []byte{0x30, 0x00}})},
+		{"truncated PEM block", []byte("-----BEGIN CERTIFICATE REQUEST-----\nMIIB")},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("ParseCSRPEM panicked: %v", r)
+				}
+			}()
+
+			if _, err := ParseCSRPEM(tt.in); err == nil {
+				t.Fatal("ParseCSRPEM accepted malformed input")
+			}
+		})
+	}
+
+	// The valid control must keep working.
+	if _, err := ParseCSRPEM(validCSR); err != nil {
+		t.Fatalf("ParseCSRPEM(valid CSR) error = %v", err)
+	}
+}
+
 // Imported from signers/local/testdata/
 const rsaOldTestCSR = "testdata/rsa-old.csr"
 

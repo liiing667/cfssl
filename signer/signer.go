@@ -300,9 +300,22 @@ func restoreRelativeOIDValues(r pkix.RDNSequence, raw []byte) error {
 // ParseCertificateRequest takes an incoming certificate request and
 // builds a certificate template from it.
 func ParseCertificateRequest(s Signer, p *config.SigningProfile, csrBytes []byte) (template *x509.Certificate, err error) {
+	if p == nil {
+		err = cferr.Wrap(cferr.PolicyError, cferr.InvalidPolicy, errors.New("missing signing profile"))
+		return
+	}
+
 	csrv, err := x509.ParseCertificateRequest(csrBytes)
 	if err != nil {
 		err = cferr.Wrap(cferr.CSRError, cferr.ParseFailed, err)
+		return
+	}
+
+	// Verify the signature before looking at any field of the CSR. Callers
+	// make trust decisions from the template, so the subject and extensions
+	// of a CSR whose signature does not verify must never reach one.
+	if err = csrv.CheckSignature(); err != nil {
+		err = cferr.Wrap(cferr.CSRError, cferr.KeyMismatch, err)
 		return
 	}
 
@@ -327,12 +340,6 @@ func ParseCertificateRequest(s Signer, p *config.SigningProfile, csrBytes []byte
 				subject.ExtraNames = append(subject.ExtraNames, vv)
 			}
 		}
-	}
-
-	err = csrv.CheckSignature()
-	if err != nil {
-		err = cferr.Wrap(cferr.CSRError, cferr.KeyMismatch, err)
-		return
 	}
 
 	template = &x509.Certificate{
