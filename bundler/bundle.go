@@ -104,33 +104,7 @@ func (b *Bundle) MarshalJSON() ([]byte, error) {
 	var keyLength int
 	var keyType, keyString string
 	keyLength = helpers.KeyLength(b.Cert.PublicKey)
-	switch b.Cert.PublicKeyAlgorithm {
-	case x509.ECDSA:
-		keyType = fmt.Sprintf("%d-bit ECDSA", keyLength)
-	case x509.RSA:
-		keyType = fmt.Sprintf("%d-bit RSA", keyLength)
-	case x509.DSA:
-		keyType = "DSA"
-	case x509.Ed25519:
-		keyType = "Ed25519"
-	case x509.MLDSA:
-		if pub, ok := b.Cert.PublicKey.(*mldsa.PublicKey); ok {
-			switch {
-			case pub.Parameters() == mldsa.MLDSA44():
-				keyType = "ML-DSA-44"
-			case pub.Parameters() == mldsa.MLDSA65():
-				keyType = "ML-DSA-65"
-			case pub.Parameters() == mldsa.MLDSA87():
-				keyType = "ML-DSA-87"
-			default:
-				keyType = "ML-DSA"
-			}
-		} else {
-			keyType = "ML-DSA"
-		}
-	default:
-		keyType = "Unknown"
-	}
+	keyType = bundleKeyType(b.Cert, keyLength)
 
 	switch key := b.Key.(type) {
 	case *rsa.PrivateKey:
@@ -182,6 +156,39 @@ func (b *Bundle) MarshalJSON() ([]byte, error) {
 		"signature":    helpers.SignatureString(b.Cert.SignatureAlgorithm),
 		"status":       b.Status,
 	})
+}
+
+// bundleKeyType returns the human-readable public-key type of cert. The
+// Ed25519 case must stay distinct from the ECDSA and RSA cases so consumers
+// can identify the key used by the leaf certificate.
+func bundleKeyType(cert *x509.Certificate, keyLength int) string {
+	switch cert.PublicKeyAlgorithm {
+	case x509.ECDSA:
+		return fmt.Sprintf("%d-bit ECDSA", keyLength)
+	case x509.RSA:
+		return fmt.Sprintf("%d-bit RSA", keyLength)
+	case x509.DSA:
+		return "DSA"
+	case x509.Ed25519:
+		return "Ed25519"
+	case x509.MLDSA:
+		if pub, ok := cert.PublicKey.(*mldsa.PublicKey); ok {
+			switch {
+			case pub.Parameters() == mldsa.MLDSA44():
+				return "ML-DSA-44"
+			case pub.Parameters() == mldsa.MLDSA65():
+				return "ML-DSA-65"
+			case pub.Parameters() == mldsa.MLDSA87():
+				return "ML-DSA-87"
+			default:
+				return "ML-DSA"
+			}
+		} else {
+			return "ML-DSA"
+		}
+	default:
+		return "Unknown"
+	}
 }
 
 // buildHostnames sets bundle.Hostnames by the x509 cert's subject CN and DNS names
