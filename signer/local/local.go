@@ -493,6 +493,17 @@ func (s *Signer) Sign(req signer.SignRequest) (cert []byte, err error) {
 	if len(req.Extensions) > 0 {
 		for _, ext := range req.Extensions {
 			oid := asn1.ObjectIdentifier(ext.ID)
+			// Extensions whose value is authoritatively set by the signing
+			// profile (KeyUsage, ExtKeyUsage, SAN, BasicConstraints, ...)
+			// must never be accepted from the request, even if an OID is
+			// present in ExtensionWhitelist. ExtraExtensions take precedence
+			// over the template fields populated by FillTemplate, so allowing
+			// them through would let a caller escalate privileges (for example
+			// by adding keyCertSign to a leaf-only profile).
+			if signer.IsCAManagedExtension(oid) {
+				log.Errorf("rejecting CA-managed extension OID %s from signing request", oid.String())
+				return nil, cferr.New(cferr.PolicyError, cferr.InvalidRequest)
+			}
 			if !profile.ExtensionWhitelist[oid.String()] {
 				return nil, cferr.New(cferr.CertificateError, cferr.InvalidRequest)
 			}

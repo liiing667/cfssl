@@ -51,8 +51,12 @@ type Extension struct {
 //
 // Extensions provided in the signRequest are copied into the certificate, as
 // long as they are in the ExtensionWhitelist for the signer's policy.
-// Extensions requested in the CSR are ignored, except for those processed by
-// ParseCertificateRequest (mainly subjectAltName) and DelegationUsage.
+// Extensions whose value is authoritatively set by the signing profile (see
+// IsCAManagedExtension, e.g. KeyUsage, ExtKeyUsage, BasicConstraints and SAN)
+// are never accepted from a request, even if whitelisted, because they would
+// override CA policy. Extensions requested in the CSR are ignored, except for
+// those processed by ParseCertificateRequest (mainly subjectAltName) and
+// DelegationUsage.
 type SignRequest struct {
 	Hosts       []string    `json:"hosts"`
 	Request     string      `json:"certificate_request"`
@@ -231,9 +235,14 @@ var caManagedExtensionOIDs = map[string]bool{
 	asn1.ObjectIdentifier{2, 5, 29, 18}.String(): true,
 }
 
-// isCAManagedExtension reports whether the given OID is for an extension whose
-// value is authoritatively set by the CA and must not be copied from a CSR.
-func isCaManagedExtension(oid asn1.ObjectIdentifier) bool {
+// IsCAManagedExtension reports whether the given OID is for an extension whose
+// value is authoritatively set by the CA (via the signing profile) and must
+// never be supplied by a certificate request. Go's x509.CreateCertificate
+// gives ExtraExtensions precedence over the template's struct fields for the
+// same OID, so accepting these from a caller would silently override the CA's
+// policy, for example replacing the profile's KeyUsage with attacker-chosen
+// bits.
+func IsCAManagedExtension(oid asn1.ObjectIdentifier) bool {
 	return caManagedExtensionOIDs[oid.String()]
 }
 
@@ -375,7 +384,7 @@ func ParseCertificateRequest(s Signer, p *config.SigningProfile, csrBytes []byte
 			// signing profile. Allowing them through would let a CSR
 			// override the CA's policy via ExtraExtensions precedence.
 			if p.CopyExtensions {
-				if isCaManagedExtension(val.Id) {
+				if IsCAManagedExtension(val.Id) {
 					log.Warningf("copy_extensions: skipping CA-managed extension OID %s from CSR", val.Id)
 					continue
 				}

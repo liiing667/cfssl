@@ -16,6 +16,15 @@ import (
 // ParsePrivateKeyDER parses a PKCS #1, PKCS #8, ECDSA, Ed25519, or ML-DSA DER-encoded
 // private key. The key must not be in PEM format.
 func ParsePrivateKeyDER(keyDER []byte) (key crypto.Signer, err error) {
+	// Validate EC keys before handing them to the standard library. The check
+	// inspects the raw SEC 1 / PKCS #8 structure and rejects keys whose named
+	// curve and embedded public key disagree, which would otherwise produce a
+	// signer whose private scalar and certificate-bound public key are on
+	// different curves. Non-EC inputs are unaffected.
+	if _, err := ValidateECPrivateKeyDER(keyDER); err != nil {
+		return nil, err
+	}
+
 	generalKey, err := x509.ParsePKCS8PrivateKey(keyDER)
 	if err != nil {
 		generalKey, err = x509.ParsePKCS1PrivateKey(keyDER)
@@ -39,6 +48,9 @@ func ParsePrivateKeyDER(keyDER []byte) (key crypto.Signer, err error) {
 	case *rsa.PrivateKey:
 		return generalKey, nil
 	case *ecdsa.PrivateKey:
+		if err := validateParsedECPrivateKey(generalKey); err != nil {
+			return nil, err
+		}
 		return generalKey, nil
 	case ed25519.PrivateKey:
 		return generalKey, nil

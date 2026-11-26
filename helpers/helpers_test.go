@@ -473,6 +473,59 @@ func TestParsePrivateKeyPEM(t *testing.T) {
 
 }
 
+// ecPrivateKeyASN1 mirrors the RFC 5915 SEC 1 structure used to build a
+// deliberately inconsistent EC private key for the mismatch regression test.
+type ecPrivateKeyASN1 struct {
+	Version       int
+	PrivateKey    []byte
+	NamedCurveOID asn1.ObjectIdentifier `asn1:"optional,explicit,tag:0"`
+	PublicKey     asn1.BitString        `asn1:"optional,explicit,tag:1"`
+}
+
+// TestParsePrivateKeyPEM_RejectsECCurveMismatch ensures that an EC private key
+// whose named curve and embedded public key are on different curves is
+// rejected at the PEM entry point. Such a key would otherwise let a caller
+// obtain a certificate binding a public key that does not match the scalar the
+// signer uses. A well-formed key on the same curve must still parse.
+func TestParsePrivateKeyPEM_RejectsECCurveMismatch(t *testing.T) {
+	p256, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p384, err := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// P-256 private scalar with a P-384 embedded public point.
+	scalar := p256.D.FillBytes(make([]byte, 32))
+	foreignPub := elliptic.Marshal(elliptic.P384(), p384.PublicKey.X, p384.PublicKey.Y)
+	mismatchedDER, err := asn1.Marshal(ecPrivateKeyASN1{
+		Version:       1,
+		PrivateKey:    scalar,
+		NamedCurveOID: asn1.ObjectIdentifier{1, 2, 840, 10045, 3, 1, 7},
+		PublicKey:     asn1.BitString{Bytes: foreignPub, BitLength: len(foreignPub) * 8},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mismatchedPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: mismatchedDER})
+
+	if _, err := ParsePrivateKeyPEM(mismatchedPEM); err == nil {
+		t.Fatal("EC private key with a curve/public-key mismatch was accepted")
+	}
+
+	// A well-formed P-256 key continues to parse through the same entry point.
+	goodDER, err := x509.MarshalECPrivateKey(p256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	goodPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: goodDER})
+	if _, err := ParsePrivateKeyPEM(goodPEM); err != nil {
+		t.Fatalf("well-formed EC private key rejected: %v", err)
+	}
+}
+
 // Imported from signers/local/testdata/
 const ecdsaTestCSR = "testdata/ecdsa256.csr"
 

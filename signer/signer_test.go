@@ -117,7 +117,7 @@ func TestAddPoliciesWithQualifiers(t *testing.T) {
 	}
 }
 
-func TestIsCaManagedExtension(t *testing.T) {
+func TestIsCAManagedExtension(t *testing.T) {
 	tests := []struct {
 		name string
 		oid  asn1.ObjectIdentifier
@@ -141,9 +141,9 @@ func TestIsCaManagedExtension(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := isCaManagedExtension(tt.oid)
+			got := IsCAManagedExtension(tt.oid)
 			if got != tt.want {
-				t.Errorf("isCaManagedExtension(%v) = %v, want %v", tt.oid, got, tt.want)
+				t.Errorf("IsCAManagedExtension(%v) = %v, want %v", tt.oid, got, tt.want)
 			}
 		})
 	}

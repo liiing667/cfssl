@@ -1256,6 +1256,87 @@ func TestExtensionSign(t *testing.T) {
 	}
 }
 
+// TestSignRejectsCAManagedExtensions is the regression test for privilege
+// escalation through SignRequest.Extensions: even when a CA-managed OID (such
+// as KeyUsage) is present in the profile's ExtensionWhitelist, the request
+// must be rejected rather than letting the caller override the key usage the
+// CA's signing profile assigns. Go's x509.CreateCertificate gives
+// ExtraExtensions precedence over the template's KeyUsage field, so accepting
+// these would silently replace the profile value with attacker-chosen bits.
+func TestSignRejectsCAManagedExtensions(t *testing.T) {
+	csrPEM, err := os.ReadFile(testCSR)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+
+	s := newCustomSigner(t, testECDSACaFile, testECDSACaKeyFile)
+
+	// The profile only grants digitalSignature. It (mis)configures the
+	// extension whitelist to include the KeyUsage OID.
+	s.policy = &config.Signing{
+		Default: &config.SigningProfile{
+			Usage:              []string{"digital signature"},
+			ExpiryString:       "1h",
+			Expiry:             1 * time.Hour,
+			ExtensionWhitelist: map[string]bool{"2.5.29.15": true, "2.5.29.37": true},
+		},
+	}
+
+	// KeyUsage BIT STRING requesting keyCertSign + cRLSign.
+	keyCertAndCRL, err := asn1.Marshal(asn1.BitString{Bytes: []byte{0x06}, BitLength: 7})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name string
+		oid  asn1.ObjectIdentifier
+	}{
+		{"KeyUsage", asn1.ObjectIdentifier{2, 5, 29, 15}},
+		{"ExtKeyUsage", asn1.ObjectIdentifier{2, 5, 29, 37}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := signer.SignRequest{
+				Request: string(csrPEM),
+				Extensions: []signer.Extension{{
+					ID:       config.OID(tt.oid),
+					Critical: true,
+					Value:    hex.EncodeToString(keyCertAndCRL),
+				}},
+			}
+			if _, err := s.Sign(req); err == nil {
+				t.Fatalf("CA-managed extension %s was accepted from the request", tt.oid)
+			}
+		})
+	}
+
+	// A non-CA-managed extension that is actually whitelisted still works, and
+	// the issued certificate keeps the profile-determined key usage.
+	s.policy.Default.ExtensionWhitelist = map[string]bool{"1.2.3.4": true}
+	okReq := signer.SignRequest{
+		Request: string(csrPEM),
+		Extensions: []signer.Extension{{
+			ID:    config.OID(asn1.ObjectIdentifier{1, 2, 3, 4}),
+			Value: hex.EncodeToString([]byte{0x05, 0x00}),
+		}},
+	}
+	certPEM, err := s.Sign(okReq)
+	if err != nil {
+		t.Fatalf("whitelisted non-CA-managed extension rejected: %v", err)
+	}
+	cert, err := helpers.ParseCertificatePEM(certPEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cert.KeyUsage != x509.KeyUsageDigitalSignature {
+		t.Fatalf("key usage = %v, want digitalSignature only", cert.KeyUsage)
+	}
+	if cert.KeyUsage&(x509.KeyUsageCertSign|x509.KeyUsageCRLSign) != 0 {
+		t.Fatal("certificate gained CA signing capabilities it was not granted")
+	}
+}
+
 func TestCTFailure(t *testing.T) {
 	// start a fake CT server that returns bad request
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
