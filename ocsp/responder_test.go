@@ -1,6 +1,7 @@
 package ocsp
 
 import (
+	"bytes"
 	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
@@ -72,6 +73,67 @@ func TestOCSP(t *testing.T) {
 		if rw.Code != tc.expected {
 			t.Errorf("Incorrect response code: got %d, wanted %d", rw.Code, tc.expected)
 		}
+	}
+}
+
+func TestOCSPGetRequestPathDecoder(t *testing.T) {
+	encoded := "MFQwUjBQME4wTDAJBgUrDgMCGgUABBQ55F6w46hhx%2Fo6OXOHa%2BYfe32YhgQU%2B3hPEvlgFYMsnxd%2FNBmzLjbqQYkCEwD6Wh0MaVKu9gJ3By9DI%2F%2Fxsd4%3D"
+
+	decoded, err := decodeOCSPGetRequest(encoded)
+	if err != nil {
+		t.Fatalf("decodeOCSPGetRequest(%q) failed: %v", encoded, err)
+	}
+	if len(decoded) == 0 {
+		t.Fatal("decodeOCSPGetRequest returned an empty request")
+	}
+
+	for _, prefix := range []string{"/", "//", "///"} {
+		withLeadingSlash, err := decodeOCSPGetRequest(prefix + encoded)
+		if err != nil {
+			t.Fatalf("decodeOCSPGetRequest with %q prefix failed: %v", prefix, err)
+		}
+		if !bytes.Equal(withLeadingSlash, decoded) {
+			t.Fatalf("%q prefix changed the decoded request", prefix)
+		}
+	}
+
+	// QueryUnescape turns '+' into ' ', so the decoder must restore it before
+	// base64 decoding.
+	plusDecoded, err := decodeOCSPGetRequest("++++")
+	if err != nil {
+		t.Fatalf("decodeOCSPGetRequest with '+' failed: %v", err)
+	}
+	if !bytes.Equal(plusDecoded, []byte{0xfb, 0xef, 0xbe}) {
+		t.Fatalf("decodeOCSPGetRequest with '+' = %x, want fbefbe", plusDecoded)
+	}
+
+	for _, invalid := range []string{"%ZZ", "!!!!"} {
+		if _, err := decodeOCSPGetRequest(invalid); err == nil {
+			t.Fatalf("decodeOCSPGetRequest(%q) unexpectedly succeeded", invalid)
+		}
+	}
+}
+
+func TestOCSPGetIgnoresRequestURI(t *testing.T) {
+	// The request body must be taken from URL.Path. RequestURI may contain an
+	// absolute URL or query parameters and must not be used as the OCSP body.
+	encoded := "MFQwUjBQME4wTDAJBgUrDgMCGgUABBQ55F6w46hhx%2Fo6OXOHa%2BYfe32YhgQU%2B3hPEvlgFYMsnxd%2FNBmzLjbqQYkCEwD6Wh0MaVKu9gJ3By9DI%2F%2Fxsd4%3D"
+	responder := Responder{
+		Source: testSource{},
+		clk:    clock.NewFake(),
+	}
+
+	rw := httptest.NewRecorder()
+	responder.ServeHTTP(rw, &http.Request{
+		Method:     "GET",
+		RequestURI: "/not-a-valid-ocsp-request?ignored=true",
+		URL: &url.URL{
+			Path:     encoded,
+			RawQuery: "ignored=true",
+		},
+	})
+	if rw.Code != http.StatusOK {
+		t.Fatalf("GET status = %d, want %d", rw.Code, http.StatusOK)
 	}
 }
 

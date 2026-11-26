@@ -280,32 +280,9 @@ func (rs Responder) ServeHTTP(response http.ResponseWriter, request *http.Reques
 	var err error
 	switch request.Method {
 	case "GET":
-		base64Request, err := url.QueryUnescape(request.URL.Path)
+		requestBody, err = decodeOCSPGetRequest(request.URL.Path)
 		if err != nil {
-			log.Debugf("Error decoding URL: %s", request.URL.Path)
-			response.WriteHeader(http.StatusBadRequest)
-			return
-		}
-		// url.QueryUnescape not only unescapes %2B escaping, but it additionally
-		// turns the resulting '+' into a space, which makes base64 decoding fail.
-		// So we go back afterwards and turn ' ' back into '+'. This means we
-		// accept some malformed input that includes ' ' or %20, but that's fine.
-		base64RequestBytes := []byte(base64Request)
-		for i := range base64RequestBytes {
-			if base64RequestBytes[i] == ' ' {
-				base64RequestBytes[i] = '+'
-			}
-		}
-		// In certain situations a UA may construct a request that has a double
-		// slash between the host name and the base64 request body due to naively
-		// constructing the request URL. In that case strip the leading slash
-		// so that we can still decode the request.
-		if len(base64RequestBytes) > 0 && base64RequestBytes[0] == '/' {
-			base64RequestBytes = base64RequestBytes[1:]
-		}
-		requestBody, err = base64.StdEncoding.DecodeString(string(base64RequestBytes))
-		if err != nil {
-			log.Debugf("Error decoding base64 from URL: %s", string(base64RequestBytes))
+			log.Debugf("Error decoding OCSP GET request from URL path %q: %v", request.URL.Path, err)
 			response.WriteHeader(http.StatusBadRequest)
 			return
 		}
@@ -423,4 +400,42 @@ func (rs Responder) ServeHTTP(response http.ResponseWriter, request *http.Reques
 	if rs.stats != nil {
 		rs.stats.ResponseStatus(ocsp.Success)
 	}
+}
+
+// decodeOCSPGetRequest decodes the base64-encoded DER OCSP request carried in
+// the URL path of a GET request. Callers must pass request.URL.Path rather
+// than request.RequestURI: the latter may contain an absolute URL or query
+// parameters that are not part of the OCSP request and would corrupt the
+// base64 payload. A leading slash is discarded to tolerate clients that join
+// the endpoint and the encoded body with an extra separator.
+func decodeOCSPGetRequest(path string) ([]byte, error) {
+	base64Request, err := url.QueryUnescape(path)
+	if err != nil {
+		return nil, fmt.Errorf("invalid URL encoding: %w", err)
+	}
+
+	// url.QueryUnescape not only unescapes %2B escaping, but it additionally
+	// turns the resulting '+' into a space, which makes base64 decoding fail.
+	// So we go back afterwards and turn ' ' back into '+'. This means we
+	// accept some malformed input that includes ' ' or %20, but that's fine.
+	base64RequestBytes := []byte(base64Request)
+	for i := range base64RequestBytes {
+		if base64RequestBytes[i] == ' ' {
+			base64RequestBytes[i] = '+'
+		}
+	}
+
+	// In certain situations a UA may construct a request that has one or more
+	// extra slashes between the host name and the base64 request body due to
+	// naively constructing the request URL. Strip every leading separator so
+	// that the encoded body is still decoded instead of being rejected.
+	for len(base64RequestBytes) > 0 && base64RequestBytes[0] == '/' {
+		base64RequestBytes = base64RequestBytes[1:]
+	}
+
+	requestBody, err := base64.StdEncoding.DecodeString(string(base64RequestBytes))
+	if err != nil {
+		return nil, fmt.Errorf("invalid base64 request: %w", err)
+	}
+	return requestBody, nil
 }

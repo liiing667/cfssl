@@ -284,11 +284,7 @@ func (b *Bundler) BundleFromRemote(serverName, ip string, flavor BundleFlavor) (
 	if ip != "" {
 		host = ip
 	}
-	// Accept bracketed IPv6 literals; JoinHostPort would bracket them again.
-	if len(host) >= 3 && host[0] == '[' && host[len(host)-1] == ']' {
-		host = host[1 : len(host)-1]
-	}
-	dialName := net.JoinHostPort(host, "443")
+	dialName := dialTarget(host)
 
 	log.Debugf("bundling from remote %s", dialName)
 
@@ -336,6 +332,21 @@ func (b *Bundler) BundleFromRemote(serverName, ip string, flavor BundleFlavor) (
 		bundle.Status.Messages = append(bundle.Status.Messages, dialError)
 	}
 	return bundle, err
+}
+
+// dialTarget formats host and the default HTTPS port into a dial address.
+// net.JoinHostPort adds brackets around any host containing a colon, so a
+// caller-supplied bracketed IPv6 literal must have its enclosing brackets
+// removed first; otherwise the result is "[[2001:db8::1]]:443".
+func dialTarget(host string) string {
+	// Honor an explicitly supplied port instead of appending a second one.
+	if h, p, err := net.SplitHostPort(host); err == nil {
+		return net.JoinHostPort(h, p)
+	}
+	if len(host) >= 3 && host[0] == '[' && host[len(host)-1] == ']' {
+		host = host[1 : len(host)-1]
+	}
+	return net.JoinHostPort(host, "443")
 }
 
 type fetchedIntermediate struct {

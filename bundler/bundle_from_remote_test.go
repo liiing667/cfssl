@@ -25,6 +25,31 @@ const (
 	remoteIP         = "192.0.2.1"
 )
 
+func TestRemoteDialTargetFormatting(t *testing.T) {
+	tests := []struct {
+		name string
+		host string
+		want string
+	}{
+		{name: "hostname", host: remoteServerName, want: remoteServerName + ":443"},
+		{name: "IPv4 literal", host: remoteIP, want: remoteIP + ":443"},
+		{name: "hostname with explicit port", host: "bundle.remote.test:8443", want: "bundle.remote.test:8443"},
+		{name: "IPv4 literal with explicit port", host: "192.0.2.1:8443", want: "192.0.2.1:8443"},
+		{name: "unbracketed IPv6 literal", host: "2001:db8::1", want: "[2001:db8::1]:443"},
+		{name: "bracketed IPv6 literal", host: "[2001:db8::1]", want: "[2001:db8::1]:443"},
+		{name: "bracketed IPv6 literal with explicit port", host: "[2001:db8::1]:8443", want: "[2001:db8::1]:8443"},
+		{name: "bracketed IPv6 literal with zone", host: "[fe80::1%eth0]", want: "[fe80::1%eth0]:443"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := dialTarget(test.host); got != test.want {
+				t.Fatalf("dialTarget(%q) = %q, want %q", test.host, got, test.want)
+			}
+		})
+	}
+}
+
 func TestBundleFromRemote(t *testing.T) {
 	originalPlatforms := ubiquity.Platforms
 	ubiquity.Platforms = nil
