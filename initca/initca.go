@@ -45,9 +45,38 @@ func validator(req *csr.CertificateRequest) error {
 	return nil
 }
 
+// cloneSigningPolicy returns a copy of policy whose default profile can be modified
+// without changing the policy returned by CAPolicy. CAPolicy is replaceable,
+// so it may return a policy shared by multiple callers; mutating that policy
+// would race with concurrent CA initialization and with signers using it.
+func cloneSigningPolicy(policy *config.Signing) *config.Signing {
+	if policy == nil {
+		return nil
+	}
+
+	copied := *policy
+	if policy.Default != nil {
+		defaultProfile := *policy.Default
+		copied.Default = &defaultProfile
+	}
+	if policy.Profiles != nil {
+		copied.Profiles = make(map[string]*config.SigningProfile, len(policy.Profiles))
+		for name, profile := range policy.Profiles {
+			if profile == nil {
+				copied.Profiles[name] = nil
+				continue
+			}
+			profileCopy := *profile
+			copied.Profiles[name] = &profileCopy
+		}
+	}
+
+	return &copied
+}
+
 // New creates a new root certificate from the certificate request.
 func New(req *csr.CertificateRequest) (cert, csrPEM, key []byte, err error) {
-	policy := CAPolicy()
+	policy := cloneSigningPolicy(CAPolicy())
 	if policy != nil && policy.Default != nil && len(req.RawSubject) != 0 {
 		policy.Default.KeepCSRSubject = true
 	}
@@ -157,7 +186,7 @@ func NewFromSigner(req *csr.CertificateRequest, priv crypto.Signer) (cert, csrPE
 // newFromSigner is NewFromSigner. If likeNew is set, req.CA.Backdate and
 // req.CRL are applied as New applies them.
 func newFromSigner(req *csr.CertificateRequest, priv crypto.Signer, likeNew bool) (cert, csrPEM []byte, err error) {
-	policy := CAPolicy()
+	policy := cloneSigningPolicy(CAPolicy())
 	if policy != nil && policy.Default != nil && len(req.RawSubject) != 0 {
 		policy.Default.KeepCSRSubject = true
 	}

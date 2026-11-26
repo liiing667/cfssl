@@ -24,6 +24,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"sync"
 	"time"
 	"unicode/utf16"
 
@@ -56,6 +57,10 @@ type Signer struct {
 	policy     *config.Signing
 	sigAlgo    x509.SignatureAlgorithm
 	dbAccessor certdb.Accessor
+
+	// caMu protects ca while a signer created without a CA certificate is
+	// being initialized. Signers that already have a CA only read ca.
+	caMu sync.RWMutex
 }
 
 // NewSigner creates a new Signer directly from a
@@ -150,6 +155,10 @@ func (e *LintError) Error() string {
 // not by-reference. This is important as the lint function needs to mutate the
 // template's signature algorithm to match the lintPriv.
 func (s *Signer) lint(template x509.Certificate, errLevel lint.LintStatus, lintRegistry lint.Registry) error {
+	return s.lintWithCA(template, errLevel, lintRegistry, s.caCertificate())
+}
+
+func (s *Signer) lintWithCA(template x509.Certificate, errLevel lint.LintStatus, lintRegistry lint.Registry, ca *x509.Certificate) error {
 	// Always return nil when linting is disabled (lint.Reserved == 0).
 	if errLevel == lint.Reserved {
 		return nil
@@ -157,6 +166,9 @@ func (s *Signer) lint(template x509.Certificate, errLevel lint.LintStatus, lintR
 	// without a lintPriv key to use to sign the tbsCertificate we can't lint it.
 	if s.lintPriv == nil {
 		return cferr.New(cferr.PrivateKeyError, cferr.Unavailable)
+	}
+	if ca == nil {
+		return cferr.New(cferr.CertificateError, cferr.Unavailable)
 	}
 
 	// The template's SignatureAlgorithm must be mutated to match the lintPriv or
@@ -170,7 +182,7 @@ func (s *Signer) lint(template x509.Certificate, errLevel lint.LintStatus, lintR
 		return cferr.New(cferr.PrivateKeyError, cferr.KeyMismatch)
 	}
 
-	prelintBytes, err := x509.CreateCertificate(rand.Reader, &template, s.ca, template.PublicKey, s.lintPriv)
+	prelintBytes, err := x509.CreateCertificate(rand.Reader, &template, ca, template.PublicKey, s.lintPriv)
 	if err != nil {
 		return cferr.Wrap(cferr.CertificateError, cferr.Unknown, err)
 	}
@@ -193,10 +205,27 @@ func (s *Signer) lint(template x509.Certificate, errLevel lint.LintStatus, lintR
 	return nil
 }
 
+// caCertificate returns the signer's current CA certificate. It may be nil
+// before the first certificate issued by a signer initialized without a CA.
+func (s *Signer) caCertificate() *x509.Certificate {
+	s.caMu.RLock()
+	defer s.caMu.RUnlock()
+	return s.ca
+}
+
 func (s *Signer) sign(template *x509.Certificate, lintErrLevel lint.LintStatus, lintRegistry lint.Registry) (cert []byte, err error) {
 	var initRoot bool
-	if s.ca == nil {
+	var ca *x509.Certificate
+
+	// Initializing a signer without a CA is a one-time transition from a
+	// template to the CA certificate produced from it. Serialize that
+	// transition so concurrent Sign calls cannot use another request's
+	// template as their issuer.
+	s.caMu.Lock()
+	ca = s.ca
+	if ca == nil {
 		if !template.IsCA {
+			s.caMu.Unlock()
 			err = cferr.New(cferr.PolicyError, cferr.InvalidRequest)
 			return
 		}
@@ -204,22 +233,27 @@ func (s *Signer) sign(template *x509.Certificate, lintErrLevel lint.LintStatus, 
 		template.EmailAddresses = nil
 		template.URIs = nil
 		s.ca = template
+		ca = template
 		initRoot = true
 	}
+	s.caMu.Unlock()
 
-	if err := s.lint(*template, lintErrLevel, lintRegistry); err != nil {
+	if err := s.lintWithCA(*template, lintErrLevel, lintRegistry, ca); err != nil {
 		return nil, err
 	}
 
-	derBytes, err := x509.CreateCertificate(rand.Reader, template, s.ca, template.PublicKey, s.priv)
+	derBytes, err := x509.CreateCertificate(rand.Reader, template, ca, template.PublicKey, s.priv)
 	if err != nil {
 		return nil, cferr.Wrap(cferr.CertificateError, cferr.Unknown, err)
 	}
 	if initRoot {
-		s.ca, err = x509.ParseCertificate(derBytes)
+		parsedCA, err := x509.ParseCertificate(derBytes)
 		if err != nil {
 			return nil, cferr.Wrap(cferr.CertificateError, cferr.ParseFailed, err)
 		}
+		s.caMu.Lock()
+		s.ca = parsedCA
+		s.caMu.Unlock()
 	}
 
 	cert = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: derBytes})
@@ -405,19 +439,20 @@ func (s *Signer) Sign(req signer.SignRequest) (cert []byte, err error) {
 		safeTemplate.CRLDistributionPoints = []string{req.CRLOverride}
 	}
 
+	ca := s.caCertificate()
 	if safeTemplate.IsCA {
 		if !profile.CAConstraint.IsCA {
 			log.Error("local signer policy disallows issuing CA certificate")
 			return nil, cferr.New(cferr.PolicyError, cferr.InvalidRequest)
 		}
 
-		if s.ca != nil && s.ca.MaxPathLen > 0 {
-			if safeTemplate.MaxPathLen >= s.ca.MaxPathLen {
+		if ca != nil && ca.MaxPathLen > 0 {
+			if safeTemplate.MaxPathLen >= ca.MaxPathLen {
 				log.Error("local signer certificate disallows CA MaxPathLen extending")
 				// do not sign a cert with pathlen > current
 				return nil, cferr.New(cferr.PolicyError, cferr.InvalidRequest)
 			}
-		} else if s.ca != nil && s.ca.MaxPathLen == 0 && s.ca.MaxPathLenZero {
+		} else if ca != nil && ca.MaxPathLen == 0 && ca.MaxPathLenZero {
 			log.Error("local signer certificate disallows issuing CA certificate")
 			// signer has pathlen of 0, do not sign more intermediate CAs
 			return nil, cferr.New(cferr.PolicyError, cferr.InvalidRequest)
@@ -536,7 +571,11 @@ func (s *Signer) Sign(req signer.SignRequest) (cert []byte, err error) {
 		}
 
 		derCert, _ := pem.Decode(cert)
-		prechain := []ct.ASN1Cert{{Data: derCert.Bytes}, {Data: s.ca.Raw}}
+		ca := s.caCertificate()
+		if ca == nil {
+			return nil, cferr.New(cferr.CertificateError, cferr.Unavailable)
+		}
+		prechain := []ct.ASN1Cert{{Data: derCert.Bytes}, {Data: ca.Raw}}
 		var sctList []ct.SignedCertificateTimestamp
 
 		for _, server := range profile.CTLogServers {
@@ -624,7 +663,11 @@ func (s *Signer) Sign(req signer.SignRequest) (cert []byte, err error) {
 // cert and must be done separately by the caller.
 func (s *Signer) SignFromPrecert(precert *x509.Certificate, scts []ct.SignedCertificateTimestamp) ([]byte, error) {
 	// Verify certificate was signed by s.ca
-	if err := precert.CheckSignatureFrom(s.ca); err != nil {
+	ca := s.caCertificate()
+	if ca == nil {
+		return nil, cferr.New(cferr.CertificateError, cferr.Unavailable)
+	}
+	if err := precert.CheckSignatureFrom(ca); err != nil {
 		return nil, err
 	}
 
@@ -725,7 +768,11 @@ func (s *Signer) SigAlgo() x509.SignatureAlgorithm {
 
 // Certificate returns the signer's certificate.
 func (s *Signer) Certificate(label, profile string) (*x509.Certificate, error) {
-	cert := *s.ca
+	ca := s.caCertificate()
+	if ca == nil {
+		return nil, cferr.New(cferr.CertificateError, cferr.Unavailable)
+	}
+	cert := *ca
 	return &cert, nil
 }
 

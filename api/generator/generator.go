@@ -34,8 +34,8 @@ specifically, section 10.2.3 ("Information Requirements").`
 
 // Sum contains digests for a certificate or certificate request.
 type Sum struct {
-	MD5  string `json:"md5"`
-	SHA1 string `json:"sha-1"`
+	MD5    string `json:"md5"`
+	SHA1   string `json:"sha-1"`
 	SHA256 string `json:"sha-256"`
 }
 
@@ -266,6 +266,19 @@ func (cg *CertGeneratorHandler) Handle(w http.ResponseWriter, r *http.Request) e
 		Request: string(csr),
 		Profile: req.Profile,
 		Label:   req.Label,
+	}
+
+	// This endpoint does not accept authentication tokens, so it must not
+	// sign with a profile that requires authentication. Otherwise a caller
+	// could use /newcert to bypass the auth_key configured for the profile.
+	profile, err := signer.Profile(cg.signer, req.Profile)
+	if err != nil {
+		return err
+	}
+	if profile.Provider != nil || profile.PrevProvider != nil ||
+		profile.AuthKeyName != "" || profile.PrevAuthKeyName != "" {
+		log.Error("profile requires authentication")
+		return errors.NewBadRequestString("authentication required")
 	}
 
 	certBytes, err := cg.signer.Sign(signReq)

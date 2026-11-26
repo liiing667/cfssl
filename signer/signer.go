@@ -130,20 +130,27 @@ type Signer interface {
 
 // Profile gets the specific profile from the signer
 func Profile(s Signer, profile string) (*config.SigningProfile, error) {
-	var p *config.SigningProfile
 	policy := s.Policy()
-	if policy != nil && policy.Profiles != nil && profile != "" {
-		p = policy.Profiles[profile]
+	if policy == nil {
+		return nil, cferr.Wrap(cferr.PolicyError, cferr.InvalidPolicy,
+			errors.New("signing policy must not be nil"))
 	}
 
-	if p == nil && policy != nil {
-		p = policy.Default
+	if profile == "" {
+		if policy.Default == nil {
+			return nil, cferr.Wrap(cferr.PolicyError, cferr.InvalidPolicy,
+				errors.New("default signing profile must not be nil"))
+		}
+		return policy.Default, nil
 	}
 
-	if p == nil {
-		return nil, cferr.Wrap(cferr.APIClientError, cferr.ClientHTTPError, errors.New("profile must not be nil"))
+	if policy.Profiles != nil {
+		if p := policy.Profiles[profile]; p != nil {
+			return p, nil
+		}
 	}
-	return p, nil
+
+	return nil, cferr.New(cferr.PolicyError, cferr.UnknownProfile)
 }
 
 // DefaultSigAlgo returns an appropriate X.509 signature algorithm given

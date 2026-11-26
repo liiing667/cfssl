@@ -10,6 +10,7 @@ import (
 	"github.com/cloudflare/cfssl/api"
 	"github.com/cloudflare/cfssl/auth"
 	"github.com/cloudflare/cfssl/bundler"
+	"github.com/cloudflare/cfssl/config"
 	"github.com/cloudflare/cfssl/errors"
 	"github.com/cloudflare/cfssl/log"
 	"github.com/cloudflare/cfssl/signer"
@@ -27,6 +28,20 @@ type Handler struct {
 	bundler *bundler.Bundler
 }
 
+// profileUsesAuthentication reports whether profile is configured to require
+// authentication. AuthKeyName and PrevAuthKeyName are checked in addition to
+// the populated providers so a profile whose provider was not initialized
+// fails closed rather than becoming an unauthenticated profile.
+func profileUsesAuthentication(profile *config.SigningProfile) bool {
+	if profile == nil {
+		return true
+	}
+	return profile.Provider != nil ||
+		profile.PrevProvider != nil ||
+		profile.AuthKeyName != "" ||
+		profile.PrevAuthKeyName != ""
+}
+
 // NewHandlerFromSigner generates a new Handler directly from
 // an existing signer.
 func NewHandlerFromSigner(signer signer.Signer) (h *api.HTTPHandler, err error) {
@@ -38,9 +53,9 @@ func NewHandlerFromSigner(signer signer.Signer) (h *api.HTTPHandler, err error) 
 
 	// Sign will only respond for profiles that have no auth provider.
 	// So if all of the profiles require authentication, we return an error.
-	haveUnauth := (policy.Default.Provider == nil)
+	haveUnauth := !profileUsesAuthentication(policy.Default)
 	for _, profile := range policy.Profiles {
-		haveUnauth = haveUnauth || (profile.Provider == nil)
+		haveUnauth = haveUnauth || !profileUsesAuthentication(profile)
 	}
 
 	if !haveUnauth {
@@ -139,7 +154,7 @@ func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 
-	if profile.Provider != nil {
+	if profileUsesAuthentication(profile) {
 		log.Error("profile requires authentication")
 		return errors.NewBadRequestString("authentication required")
 	}
@@ -189,12 +204,12 @@ func NewAuthHandlerFromSigner(signer signer.Signer) (http.Handler, error) {
 	// AuthSign will not respond for profiles that have no auth provider.
 	// So if there are no profiles with auth providers in this policy,
 	// we return an error.
-	haveAuth := (policy.Default.Provider != nil)
+	haveAuth := policy.Default != nil && (policy.Default.Provider != nil || policy.Default.PrevProvider != nil)
 	for _, profile := range policy.Profiles {
 		if haveAuth {
 			break
 		}
-		haveAuth = (profile.Provider != nil)
+		haveAuth = profile != nil && (profile.Provider != nil || profile.PrevProvider != nil)
 	}
 
 	if !haveAuth {
@@ -253,13 +268,13 @@ func (h *AuthHandler) Handle(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 
-	if profile.Provider == nil {
+	if profile.Provider == nil && profile.PrevProvider == nil {
 		log.Error("profile has no authentication provider")
 		return errors.NewBadRequestString("no authentication provider")
 	}
 
 	validAuth := false
-	if profile.Provider.Verify(&aReq) {
+	if profile.Provider != nil && profile.Provider.Verify(&aReq) {
 		validAuth = true
 	} else if profile.PrevProvider != nil && profile.PrevProvider.Verify(&aReq) {
 		validAuth = true
